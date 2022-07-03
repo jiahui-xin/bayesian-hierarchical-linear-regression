@@ -1,0 +1,209 @@
+---
+title: "Bayesian project"
+author: "Jiahui Xin"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r,warning=FALSE}
+library(MASS)
+library(R2jags)
+library(bayesplot)
+```
+
+
+
+# new data
+
+```{r}
+salary<-read.csv("https://raw.githubusercontent.com/methodenlehre/data/master/salary-data.csv")
+
+```
+
+
+```{r}
+salary$index=sapply(salary$firma,
+                    function(x)as.numeric(strsplit(x," ")[[1]][2]))
+```
+
+
+
+
+```{r}
+with(salary,plot(experience,salary,col=index,cex=4.6,pch=46))
+for(i in 1:20)points(list.fit[[i]]$model$experience,list.fit[[i]]$fitted.values,
+                     col=i,type="l")
+```
+```{r}
+fit.pool<-lm(salary~experience,data=salary)
+summary(fit.pool)
+plot(fit.pool)
+plot(fit.pool$fitted.values,salary$salary)
+points(1:20000,1:20000,col=2,type="l")
+```
+
+```{r}
+list.fit<-list()
+coeff.seperate=c()
+for(i in 1:20){
+  list.fit[[i]]=(lm(salary~experience,data=salary[salary$index==i,]))
+  coeff.seperate=rbind(coeff.seperate,list.fit[[i]]$coefficients)
+}
+```
+
+
+```{r}
+sigma.seperate<-unlist(lapply(list.fit,function(x)sqrt(sum((x$resid)^2)/x$df.residual)))
+summary(sigma.seperate)
+boxplot(sigma.seperate)
+
+print(lapply(list.fit,summary))
+
+colMeans(coeff.seperate)
+coeff.bias=coeff.seperate-t(matrix(rep(colMeans(coeff.seperate),20),2))
+```
+
+
+
+```{r}
+set.seed(114514)
+dat.list <- with(salary,list(y=salary,X=experience,
+                               X_firma=index, k=length(unique(index)),
+                               n=length(salary)))
+model <- function() {
+  #Likelihood
+    for (i in 1:n) {
+    y[i]~dnorm(mu[i],tau)
+    mu[i] <- (beta0[X_firma[i]]) + (beta1[X_firma[i]]) * X[i] 
+    }
+    #Priors
+    tau  ~ dgamma(1,1.0E8)
+    sigma <- 1/sqrt(tau)
+    
+    for(j in 1:k){
+      beta0[j]~dt(beta0.mean,tau0[j],1)
+      tau0[j]  ~ dgamma(1,1.0E5)#change this line to tune
+      sigma0[j] <- 1/sqrt(tau0[j])
+    }
+    beta0.mean~dnorm(0,1.0E-8)
+    
+    for(l in 1:k){
+      beta1[l]~dt(beta1.mean,tau1[l],1)
+      tau1[l]  ~ dgamma(1,1.0E5)#change this line to tune
+      sigma1[l] <- 1/sqrt(tau1[l])
+    }
+    beta1.mean~dnorm(0,1.0E-8)
+    
+    }
+system.time(
+jags <- jags(model.file=model, data=dat.list, inits=NULL,
+          param=c('beta0.mean','beta0','beta1.mean','beta1','sigma'),
+          n.chain=4,
+          n.iter=3000, n.burnin=1000)
+  )
+```
+```{r}
+plot(jags)
+par(mar=c(1,1,1,1),mfrow=c(3,3))
+#traceplot(jags,ask=FALSE)
+```
+
+
+```{r}
+print(jags)
+```
+
+```{r}
+mcmc_intervals(jags$BUGSoutput$sims.matrix, regex_pars = "beta0|sigma")
+mcmc_intervals(jags$BUGSoutput$sims.matrix, regex_pars = "beta1|sigma")
+```
+
+```{r}
+unique(salary$index[salary$sector=="Privat"])
+
+(1:20)[coeff.bias[,2]>0]
+```
+
+
+
+```{r}
+beta0.sim<-jags$BUGSoutput$sims.matrix[,1:20]
+beta1.sim<-jags$BUGSoutput$sims.matrix[,22:41]
+sigma.sim<-jags$BUGSoutput$sims.matrix[,"sigma"]
+beta0.mean.sim<-jags$BUGSoutput$sims.matrix[,"beta0.mean"]
+beta1.mean.sim<-jags$BUGSoutput$sims.matrix[,"beta1.mean"]
+
+par(mfrow=c(3,3))
+y<-salary$salary
+spl_ind<-sample(1:nrow(jags$BUGSoutput$sims.matrix),9)
+for(i in spl_ind){
+  y_rep<-rep(beta0.sim[i,],each=30)+
+    salary$experience*rep(beta1.sim[i,],each=30)+rnorm(600,0,sigma.sim[i])
+  plot(y_rep,y)
+  points(0:20000,0:20000,type="l",col=2)
+}
+```
+```{r}
+beta0.mean=colMeans(beta0.sim)
+beta1.mean=colMeans(beta1.sim)
+sigma.mean=mean(sigma.sim)
+y<-salary$salary
+spl_ind<-sample(1:nrow(jags$BUGSoutput$sims.matrix),9)
+y_hat<-rep(beta0.mean,each=30)+salary$experience*rep(beta1.mean,each=30)
+plot(y_hat,y)
+points(0:20000,0:20000,type="l",col=2)
+```
+```{r}
+hist(beta0.mean.sim)
+hist(beta1.mean.sim)
+hist(sigma.sim)
+
+summary(beta0.mean.sim)
+
+summary(beta1.mean.sim)
+
+summary(coeff.seperate[,2])
+
+summary(beta1.mean)
+
+
+```
+
+
+
+
+```{r}
+resid.bayes<-y-y_hat
+#hist(resid.bayes)
+
+sqrt(mean(resid.bayes^2))
+rmse.bayes=numeric(20)
+print("calibration")
+for(i in 1:20){
+  rmse.bayes[i]<-(sqrt(mean(resid.bayes[salary$index==i]^2)))
+}
+
+rmse.seperate=numeric(20)
+for(i in 1:20){
+  rmse.seperate[i]<-(sqrt(mean(list.fit[[i]]$residuals^2)))
+}
+summary(rmse.bayes)
+rmse.bayes-rmse.seperate
+```
+
+```{r}
+round(rmse.bayes,2)
+round(rmse.seperate,2)
+
+cbind(round(rmse.bayes,2),round(rmse.seperate,2),
+      round(rmse.bayes-rmse.seperate,2))
+```
+
+
+# hist
+```{r}
+
+hist()
+
+```
+
